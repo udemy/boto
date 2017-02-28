@@ -545,6 +545,30 @@ class Key(object):
         return self.bucket.delete_key(self.name, version_id=self.version_id,
                                       headers=headers)
 
+    def get_tags(self):
+        """
+        Returns tags associated with key
+        """
+        response = self.get_xml_tags()
+        tags = Tags()
+        h = handler.XmlHandler(tags, self)
+        if not isinstance(response, bytes):
+            response = response.encode('utf-8')
+        xml.sax.parseString(response, h)
+        return tags
+
+    def get_xml_tags(self):
+        """
+        Returns body of GET response
+        """
+        response = self.connection.make_request('GET', self.name, query_args='tagging', headers=None)
+        body = response.read()
+        if response.status == 200:
+            return body
+        else:
+            raise self.connection.provider.storage_response_error(
+                response.status, response.reason, body)
+
     def get_metadata(self, name):
         return self.metadata.get(name)
 
