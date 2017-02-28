@@ -20,29 +20,30 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
+import base64
+import binascii
 import email.utils
 import errno
 import hashlib
+import math
 import mimetypes
 import os
 import re
-import base64
-import binascii
-import math
+import xml.sax
+import xml.sax.saxutils
 from hashlib import md5
-import boto.utils
-from boto.compat import BytesIO, six, urllib, encodebytes
 
-from boto.exception import BotoClientError
-from boto.exception import StorageDataError
-from boto.exception import PleaseRetryException
+import boto.utils
+from boto import UserAgent, handler
+from boto.compat import BytesIO, encodebytes, six, urllib
+from boto.exception import (BotoClientError, PleaseRetryException,
+                            StorageDataError)
 from boto.provider import Provider
 from boto.s3.keyfile import KeyFile
+from boto.s3.tagging import Tags
 from boto.s3.user import User
-from boto import UserAgent
-from boto.utils import compute_md5, compute_hash
-from boto.utils import find_matching_headers
-from boto.utils import merge_headers_by_name
+from boto.utils import (compute_hash, compute_md5, find_matching_headers,
+                        merge_headers_by_name)
 
 
 class Key(object):
@@ -547,7 +548,26 @@ class Key(object):
 
     def get_tags(self):
         """
-        Returns tags associated with key
+        :sample response:
+        HTTP/1.1 200 OK
+        Date: Thu, 22 Sep 2016 21:33:08 GMT
+        Connection: close
+        Server: AmazonS3
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+           <TagSet>
+              <Tag>
+                 <Key>tag1</Key>
+                 <Value>val1</Value>
+              </Tag>
+              <Tag>
+                 <Key>tag2</Key>
+                 <Value>val2</Value>
+              </Tag>
+           </TagSet>
+        </Tagging>
+
+        :return: tags associated with key
         """
         response = self.get_xml_tags()
         tags = Tags()
@@ -559,14 +579,83 @@ class Key(object):
 
     def get_xml_tags(self):
         """
-        Returns body of GET response
+        :sample request:
+        GET /example-object?tagging HTTP/1.1
+        Host: examplebucket.s3.amazonaws.com
+        Date: Thu, 22 Sep 2016 21:33:08 GMT
+        Authorization: authorization string
+
+        :return: body of GET response
         """
-        response = self.connection.make_request('GET', self.name, query_args='tagging', headers=None)
+
+        response = self.bucket.connection.make_request('GET', self.bucket.name, self.name,
+                                                       query_args='tagging', headers=None)
         body = response.read()
         if response.status == 200:
             return body
         else:
-            raise self.connection.provider.storage_response_error(
+            raise self.bucket.connection.provider.storage_response_error(
+                response.status, response.reason, body)
+
+    def set_xml_tags(self, tag_str, headers=None, query_args='tagging'):
+        """
+        :Sample request:
+        PUT object-key?tagging HTTP/1.1
+        Host: examplebucket.s3.amazonaws.com
+        Content-Length: length
+        Content-MD5: pUNXr/BjKK5G2UKExample==
+        x-amz-date: 20160923T001956Z
+        Authorization: authorization string
+        <Tagging>
+           <TagSet>
+              <Tag>
+                 <Key>tag1</Key>
+                 <Value>val1</Value>
+              </Tag>
+              <Tag>
+                 <Key>tag2</Key>
+                 <Value>val2</Value>
+              </Tag>
+           </TagSet>
+        </Tagging>
+        """
+        if headers is None:
+            headers = {}
+        md5 = boto.utils.compute_md5(StringIO(tag_str))
+        headers['Content-MD5'] = md5[1]
+        headers['Content-Type'] = 'text/xml'
+        if not isinstance(tag_str, bytes):
+            tag_str = tag_str.encode('utf-8')
+        response = self.bucket.connection.make_request('PUT', self.bucket.name, self.name,
+                                                       data=tag_str,
+                                                       query_args=query_args,
+                                                       headers=headers)
+        body = response.read()
+        if response.status != 204:
+            raise self.bucket.connection.provider.storage_response_error(
+                response.status, response.reason, body)
+        return True
+
+    def set_tags(self, tags, headers=None):
+        """
+        :Sample response:
+        HTTP/1.1 200 OK
+        x-amz-id-2: YgIPIfBiKa2bj0KMgUAdQkf3ShJTOOpXUueF6QKo
+        x-amz-request-id: 236A8905248E5A01
+        Date: Fri, 23 Sep 2016 00:20:19 GMT
+        """
+        return self.set_xml_tags(tags.to_xml(), headers=headers)
+
+    def delete_tags(self, headers=None):
+        response = self.bucket.connection.make_request('DELETE', self.bucket.name, self.name,
+                                                       query_args='tagging',
+                                                       headers=headers)
+        body = response.read()
+        boto.log.debug(body)
+        if response.status == 204:
+            return True
+        else:
+            raise self.bucket.connection.provider.storage_response_error(
                 response.status, response.reason, body)
 
     def get_metadata(self, name):
